@@ -1,103 +1,205 @@
-import Image from "next/image";
+"use client";
+import React, { useEffect, useState } from "react";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from "recharts";
 
-export default function Home() {
+export default function App() {
+  const [timeline, setTimeline] = useState([]);
+  const [examData, setExamData] = useState([
+    { date: "2025-08-12", ureia: 60, creatinina: 1.6, leucocitos: 13800 },
+  ]);
+  const [examExplanation, setExamExplanation] = useState(
+    "Hemograma: leucócitos elevados (13.800/µL) → indica resposta inflamatória."
+  );
+  const [suspeitas, setSuspeitas] = useState([
+    "Reação adversa à Macrodantina",
+    "Desidratação",
+    "Infecção urinária",
+  ]);
+  const [resumo, setResumo] = useState(
+    "Paciente apresentou vômitos, desidratação e sinais vitais instáveis. Internada para hidratação e investigação."
+  );
+  const [proximosPassos, setProximosPassos] = useState([
+    "Aguardar resultado da cultura de urina",
+    "Reavaliar necessidade de tomografia",
+    "Manter hidratação",
+  ]);
+  const [newEvent, setNewEvent] = useState({ date: "", event: "", details: "" });
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Carregar timeline salva no backend (Blob)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/events");
+        if (res.ok) {
+          const data = await res.json();
+          setTimeline(data);
+        } else {
+          setTimeline([
+            { date: "2025-08-12", event: "Internação por desidratação", details: "Pressão baixa, taquicardia, vômitos" },
+          ]);
+        }
+      } catch {
+        setTimeline([
+          { date: "2025-08-12", event: "Internação por desidratação", details: "Pressão baixa, taquicardia, vômitos" },
+        ]);
+      }
+    })();
+  }, []);
+
+  const handleAddEvent = async () => {
+    if (!newEvent.date || !newEvent.event) return;
+    const updated = [...timeline, newEvent];
+    setIsSaving(true);
+    try {
+      const res = await fetch("/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updated),
+      });
+      if (res.ok) {
+        setTimeline(updated);
+        setNewEvent({ date: "", event: "", details: "" });
+      } else {
+        alert("Não foi possível salvar agora. Tente novamente.");
+      }
+    } catch {
+      alert("Erro de rede ao salvar.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const form = new FormData();
+    form.append("file", file);
+
+    const res = await fetch("/api/upload", { method: "POST", body: form });
+    if (!res.ok) {
+      alert("Falha no upload");
+      return;
+    }
+    const { url } = await res.json();
+
+    setExamData((prev) => [
+      ...prev,
+      { date: "2025-08-13", ureia: 58, creatinina: 1.4, leucocitos: 12000 },
+    ]);
+    setExamExplanation(
+      "Hemograma: leucócitos ainda elevados (12.000/µL), porém em queda → possível melhora."
+    );
+
+    const novoEvento = {
+      date: new Date().toISOString().slice(0, 10),
+      event: "Upload de exame",
+      details: `Arquivo salvo: ${url}`,
+    };
+    const updated = [...timeline, novoEvento];
+    setTimeline(updated);
+
+    await fetch("/api/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updated),
+    });
+  };
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      <h1 className="text-3xl font-bold">Histórico Clínico - Mamãe</h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      <div className="bg-white shadow p-4 rounded-2xl">
+        <h2 className="text-xl font-semibold mb-4">📅 Timeline</h2>
+        <div className="space-y-4">
+          {timeline.map((item, index) => (
+            <div key={index} className="flex items-center space-x-4">
+              <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
+              <div>
+                <p className="font-bold">
+                  {item.date} - {item.event}
+                </p>
+                <p className="text-sm text-gray-600">{item.details}</p>
+              </div>
+            </div>
+          ))}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+      </div>
+
+      <div className="bg-white shadow p-4 rounded-2xl">
+        <h2 className="text-xl font-semibold mb-2">📊 Evolução dos Exames</h2>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={examData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="date" />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Line type="monotone" dataKey="ureia" stroke="#8884d8" />
+            <Line type="monotone" dataKey="creatinina" stroke="#82ca9d" />
+            <Line type="monotone" dataKey="leucocitos" stroke="#ff7300" />
+          </LineChart>
+        </ResponsiveContainer>
+        <p className="mt-2 text-sm text-gray-700">{examExplanation}</p>
+      </div>
+
+      <div className="bg-white shadow p-4 rounded-2xl">
+        <h2 className="text-xl font-semibold mb-2">🔍 Principais Suspeitas</h2>
+        <ul className="list-disc ml-5">
+          {suspeitas.map((s, i) => <li key={i}>{s}</li>)}
+        </ul>
+      </div>
+
+      <div className="bg-white shadow p-4 rounded-2xl">
+        <h2 className="text-xl font-semibold mb-2">📝 Resumo do Quadro</h2>
+        <p>{resumo}</p>
+      </div>
+
+      <div className="bg-white shadow p-4 rounded-2xl">
+        <h2 className="text-xl font-semibold mb-2">⏭ Próximos Passos</h2>
+        <ul className="list-disc ml-5">
+          {proximosPassos.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      </div>
+
+      <div className="bg-white shadow p-4 rounded-2xl">
+        <h2 className="text-xl font-semibold mb-2">➕ Adicionar Novo Evento</h2>
+        <input
+          type="date"
+          value={newEvent.date}
+          onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
+          className="border p-1 rounded mr-2"
+        />
+        <input
+          type="text"
+          placeholder="Evento"
+          value={newEvent.event}
+          onChange={(e) => setNewEvent({ ...newEvent, event: e.target.value })}
+          className="border p-1 rounded mr-2"
+        />
+        <textarea
+          placeholder="Detalhes (descreva sintomas, contexto, etc.)"
+          value={newEvent.details}
+          onChange={(e) => setNewEvent({ ...newEvent, details: e.target.value })}
+          className="border p-1 rounded w-full mt-2"
+        />
+        <button
+          onClick={handleAddEvent}
+          disabled={isSaving}
+          className="bg-blue-500 text-white px-3 py-1 rounded mt-2"
         >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          {isSaving ? "Salvando..." : "Adicionar"}
+        </button>
+
+        <div className="mt-4">
+          <label className="block mb-1 font-medium">📎 Upload de Arquivo de Exame</label>
+          <input type="file" className="border p-1 rounded" onChange={handleFileUpload} />
+        </div>
+      </div>
     </div>
   );
 }
