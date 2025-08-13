@@ -1,18 +1,34 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
 } from "recharts";
 
+/* ---- Tipos (TS) ---- */
+type EventItem = { date: string; event: string; details: string };
+type ExamPoint = {
+  date: string;
+  ureia: number;
+  creatinina: number;
+  leucocitos: number;
+};
+
 export default function App() {
-  const [timeline, setTimeline] = useState([]);
-  const [examData, setExamData] = useState([
+  const [timeline, setTimeline] = useState<EventItem[]>([]);
+  const [examData, setExamData] = useState<ExamPoint[]>([
     { date: "2025-08-12", ureia: 60, creatinina: 1.6, leucocitos: 13800 },
   ]);
   const [examExplanation, setExamExplanation] = useState(
     "Hemograma: leucócitos elevados (13.800/µL) → indica resposta inflamatória."
   );
-  const [suspeitas, setSuspeitas] = useState([
+  const [suspeitas, setSuspeitas] = useState<string[]>([
     "Reação adversa à Macrodantina",
     "Desidratação",
     "Infecção urinária",
@@ -20,12 +36,16 @@ export default function App() {
   const [resumo, setResumo] = useState(
     "Paciente apresentou vômitos, desidratação e sinais vitais instáveis. Internada para hidratação e investigação."
   );
-  const [proximosPassos, setProximosPassos] = useState([
+  const [proximosPassos, setProximosPassos] = useState<string[]>([
     "Aguardar resultado da cultura de urina",
     "Reavaliar necessidade de tomografia",
     "Manter hidratação",
   ]);
-  const [newEvent, setNewEvent] = useState({ date: "", event: "", details: "" });
+  const [newEvent, setNewEvent] = useState<EventItem>({
+    date: "",
+    event: "",
+    details: "",
+  });
   const [isSaving, setIsSaving] = useState(false);
 
   // Carregar timeline salva no backend (Blob)
@@ -34,16 +54,24 @@ export default function App() {
       try {
         const res = await fetch("/api/events");
         if (res.ok) {
-          const data = await res.json();
+          const data = (await res.json()) as EventItem[];
           setTimeline(data);
         } else {
           setTimeline([
-            { date: "2025-08-12", event: "Internação por desidratação", details: "Pressão baixa, taquicardia, vômitos" },
+            {
+              date: "2025-08-12",
+              event: "Internação por desidratação",
+              details: "Pressão baixa, taquicardia, vômitos",
+            },
           ]);
         }
       } catch {
         setTimeline([
-          { date: "2025-08-12", event: "Internação por desidratação", details: "Pressão baixa, taquicardia, vômitos" },
+          {
+            date: "2025-08-12",
+            event: "Internação por desidratação",
+            details: "Pressão baixa, taquicardia, vômitos",
+          },
         ]);
       }
     })();
@@ -51,7 +79,7 @@ export default function App() {
 
   const handleAddEvent = async () => {
     if (!newEvent.date || !newEvent.event) return;
-    const updated = [...timeline, newEvent];
+    const updated: EventItem[] = [...timeline, newEvent];
     setIsSaving(true);
     try {
       const res = await fetch("/api/events", {
@@ -72,7 +100,9 @@ export default function App() {
     }
   };
 
-  const handleFileUpload = async (e) => {
+  const handleFileUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -84,7 +114,7 @@ export default function App() {
       alert("Falha no upload");
       return;
     }
-    const { url } = await res.json();
+    const { url } = (await res.json()) as { url: string };
 
     setExamData((prev) => [
       ...prev,
@@ -94,12 +124,12 @@ export default function App() {
       "Hemograma: leucócitos ainda elevados (12.000/µL), porém em queda → possível melhora."
     );
 
-    const novoEvento = {
+    const novoEvento: EventItem = {
       date: new Date().toISOString().slice(0, 10),
       event: "Upload de exame",
       details: `Arquivo salvo: ${url}`,
     };
-    const updated = [...timeline, novoEvento];
+    const updated: EventItem[] = [...timeline, novoEvento];
     setTimeline(updated);
 
     await fetch("/api/events", {
@@ -113,12 +143,13 @@ export default function App() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <h1 className="text-3xl font-bold">Histórico Clínico - Mamãe</h1>
 
+      {/* Timeline */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-4">📅 Timeline</h2>
         <div className="space-y-4">
           {timeline.map((item, index) => (
             <div key={index} className="flex items-center space-x-4">
-              <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
+              <div className="w-4 h-4 bg-blue-500 rounded-full" />
               <div>
                 <p className="font-bold">
                   {item.date} - {item.event}
@@ -130,6 +161,7 @@ export default function App() {
         </div>
       </div>
 
+      {/* Gráfico */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">📊 Evolução dos Exames</h2>
         <ResponsiveContainer width="100%" height={300}>
@@ -147,25 +179,33 @@ export default function App() {
         <p className="mt-2 text-sm text-gray-700">{examExplanation}</p>
       </div>
 
+      {/* Suspeitas */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">🔍 Principais Suspeitas</h2>
         <ul className="list-disc ml-5">
-          {suspeitas.map((s, i) => <li key={i}>{s}</li>)}
+          {suspeitas.map((s, i) => (
+            <li key={i}>{s}</li>
+          ))}
         </ul>
       </div>
 
+      {/* Resumo */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">📝 Resumo do Quadro</h2>
         <p>{resumo}</p>
       </div>
 
+      {/* Próximos passos */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">⏭ Próximos Passos</h2>
         <ul className="list-disc ml-5">
-          {proximosPassos.map((p, i) => <li key={i}>{p}</li>)}
+          {proximosPassos.map((p, i) => (
+            <li key={i}>{p}</li>
+          ))}
         </ul>
       </div>
 
+      {/* Formulário */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">➕ Adicionar Novo Evento</h2>
         <input
@@ -184,7 +224,9 @@ export default function App() {
         <textarea
           placeholder="Detalhes (descreva sintomas, contexto, etc.)"
           value={newEvent.details}
-          onChange={(e) => setNewEvent({ ...newEvent, details: e.target.value })}
+          onChange={(e) =>
+            setNewEvent({ ...newEvent, details: e.target.value })
+          }
           className="border p-1 rounded w-full mt-2"
         />
         <button
@@ -196,8 +238,14 @@ export default function App() {
         </button>
 
         <div className="mt-4">
-          <label className="block mb-1 font-medium">📎 Upload de Arquivo de Exame</label>
-          <input type="file" className="border p-1 rounded" onChange={handleFileUpload} />
+          <label className="block mb-1 font-medium">
+            📎 Upload de Arquivo de Exame
+          </label>
+          <input
+            type="file"
+            className="border p-1 rounded"
+            onChange={handleFileUpload}
+          />
         </div>
       </div>
     </div>
