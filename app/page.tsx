@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   LineChart,
   Line,
@@ -26,8 +26,29 @@ type EventItem = {
   event: string;
   details: string;
   fileUrl?: string;        // URL do arquivo no Blob
-  analysis?: EventAnalysis; // Dados “considerados” ao analisar o arquivo
+  analysis?: EventAnalysis; // Dados extraídos (texto ou IA)
 };
+
+function parseNumber(n: string | undefined) {
+  if (!n) return undefined;
+  const v = parseFloat(n.replace(",", "."));
+  return Number.isFinite(v) ? v : undefined;
+}
+
+// tenta extrair números do campo "Detalhes"
+function extractFromText(details: string): EventAnalysis | undefined {
+  if (!details?.trim()) return undefined;
+  const txt = details.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+  const ureia = parseNumber(txt.match(/ureia[^0-9]*([0-9]+(?:[.,][0-9]+)?)/i)?.[1]);
+  const creatinina = parseNumber(txt.match(/creatinina[^0-9]*([0-9]+(?:[.,][0-9]+)?)/i)?.[1]);
+  const leucocitos = parseNumber(txt.match(/leucocitos?[^0-9]*([0-9]+(?:[.,][0-9]+)?)/i)?.[1]);
+
+  if (ureia !== undefined || creatinina !== undefined || leucocitos !== undefined) {
+    return { ureia, creatinina, leucocitos, notas: "Valores lidos do campo Detalhes." };
+  }
+  return undefined;
+}
 
 export default function App() {
   const [timeline, setTimeline] = useState<EventItem[]>([]);
@@ -50,11 +71,15 @@ export default function App() {
     "Reavaliar necessidade de tomografia",
     "Manter hidratação",
   ]);
+
+  // formulário
   const [newEvent, setNewEvent] = useState<EventItem>({
     date: "",
     event: "",
     details: "",
   });
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   // Carrega timeline persistida
@@ -86,7 +111,6 @@ export default function App() {
     })();
   }, []);
 
-  // Salva a timeline inteira no backend
   async function persistTimeline(updated: EventItem[]) {
     await fetch("/api/events", {
       method: "POST",
@@ -95,152 +119,141 @@ export default function App() {
     });
   }
 
-  const handleAddEvent = async () => {
-    if (!newEvent.date || !newEvent.event) return;
-    const updated = [...timeline, newEvent];
-    setIsSaving(true);
-    try {
-      await persistTimeline(updated);
-      setTimeline(updated);
-      setNewEvent({ date: "", event: "", details: "" });
-    } catch {
-      alert("Não foi possível salvar agora. Tente novamente.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  // Ajuda a criar uma explicação simples para o hemograma
   function explainLeucocitos(prev: number, curr: number) {
     if (curr > prev) return `Leucócitos subiram (${curr.toLocaleString("pt-BR")}/µL) — possível piora.`;
     if (curr < prev) return `Leucócitos caíram (${curr.toLocaleString("pt-BR")}/µL) — possível melhora.`;
     return `Leucócitos estáveis (${curr.toLocaleString("pt-BR")}/µL).`;
   }
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // 1) Envia para a API que grava no Blob
-    const form = new FormData();
-    form.append("file", file);
-
-    const res = await fetch("/api/upload", { method: "POST", body: form });
-    if (!res.ok) {
-      alert("Falha no upload");
+  // BOTÃO "Adicionar"
+  const handleAddEvent = async () => {
+    if (!newEvent.date || !newEvent.event) {
+      alert("Informe data e evento.");
       return;
     }
-    const { url } = (await res.json()) as { url: string };
 
-    // 2) Coleta valores do exame (MVP: via prompt)
-    const today = new Date().toISOString().slice(0, 10);
-    const ask = (label: string) => {
-      const v = prompt(`Informe ${label} (use ponto como separador decimal)`);
-      if (!v) return undefined;
-      const num = parseFloat(v.replace(",", "."));
-      return Number.isFinite(num) ? num : undefined;
-    };
+    setIsSaving(true);
+    try {
+      // 1) sobe arquivo se existir
+      let fileUrl: string | undefined;
+      if (pendingFile) {
+        const form = new FormData();
+        form.append("file", pendingFile);
+        const up = await fetch("/api/upload", { method: "POST", body: form });
+        if (up.ok) {
+          ({ url: fileUrl } = (await up.json()) as { url: string });
+        } else {
+          alert("Falha no upload do arquivo.");
+        }
+      }
 
-    const ureia = ask("Ureia (mg/dL)");
-    const creatinina = ask("Creatinina (mg/dL)");
-    const leucocitos = ask("Leucócitos (/µL)");
+      // 2) tenta extrair valores do campo Detalhes
+      let analysis: EventAnalysis | undefined = extractFromText(newEvent.details);
 
-    // 3) Se ao menos um indicador foi informado, atualiza gráfico
-    let newExplanation = examExplanation;
-    if (ureia !== undefined || creatinina !== undefined || leucocitos !== undefined) {
-      const last = examData[examData.length - 1];
+      // 3) se não veio nada e temos arquivo → IA
+      if (!analysis && fileUrl) {
+        const resp = await fetch("/api/parse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileUrl }),
+        });
+        if (resp.ok) {
+          analysis = (await resp.json()) as EventAnalysis;
+        }
+      }
 
-      const nextPoint: ExamPoint = {
-        date: today,
-        ureia: ureia ?? last.ureia,
-        creatinina: creatinina ?? last.creatinina,
-        leucocitos: leucocitos ?? last.leucocitos,
+      // 4) monta o evento final
+      const eventToSave: EventItem = {
+        ...newEvent,
+        fileUrl,
+        analysis,
       };
 
-      setExamData((prev) => [...prev, nextPoint]);
+      // 5) atualiza gráfico se houver qualquer valor
+      if (analysis && (analysis.ureia !== undefined || analysis.creatinina !== undefined || analysis.leucocitos !== undefined)) {
+        const last = examData[examData.length - 1];
+        const nextPoint: ExamPoint = {
+          date: newEvent.date,
+          ureia: analysis.ureia ?? last.ureia,
+          creatinina: analysis.creatinina ?? last.creatinina,
+          leucocitos: analysis.leucocitos ?? last.leucocitos,
+        };
+        setExamData((prev) => [...prev, nextPoint]);
 
-      // Atualiza explicação com base em leucócitos, se informado
-      if (leucocitos !== undefined) {
-        newExplanation = explainLeucocitos(last.leucocitos, leucocitos);
-        setExamExplanation(newExplanation);
+        if (analysis.leucocitos !== undefined) {
+          setExamExplanation(explainLeucocitos(last.leucocitos, analysis.leucocitos));
+        }
       }
+
+      const updated = [...timeline, eventToSave];
+      setTimeline(updated);
+      await persistTimeline(updated);
+
+      // limpa formulário
+      setNewEvent({ date: "", event: "", details: "" });
+      setPendingFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err) {
+      alert("Erro ao salvar. Tente novamente.");
+    } finally {
+      setIsSaving(false);
     }
-
-    // 4) Adiciona um evento na timeline com botão de download + dados analisados
-    const novoEvento: EventItem = {
-      date: today,
-      event: "Upload de exame",
-      details: "Arquivo recebido e valores registrados.",
-      fileUrl: url,
-      analysis: {
-        ureia,
-        creatinina,
-        leucocitos,
-        notas: "Valores informados manualmente no momento do upload.",
-      },
-    };
-
-    const updated = [...timeline, novoEvento];
-    setTimeline(updated);
-    await persistTimeline(updated);
   };
+
+  // UI auxiliar para “Dados atualizados”
+  function renderAnalysis(a?: EventAnalysis) {
+    if (!a || (a.ureia === undefined && a.creatinina === undefined && a.leucocitos === undefined))
+      return "—";
+    const parts: string[] = [];
+    if (a.ureia !== undefined) parts.push(`Ureia: ${a.ureia}`);
+    if (a.creatinina !== undefined) parts.push(`Creatinina: ${a.creatinina}`);
+    if (a.leucocitos !== undefined) parts.push(`Leucócitos: ${a.leucocitos.toLocaleString("pt-BR")}`);
+    return parts.join(" | ");
+  }
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <h1 className="text-3xl font-bold">Histórico Clínico - Mamãe</h1>
 
-      {/* Timeline */}
+      {/* TABELA da Timeline */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-4">📅 Timeline</h2>
-        <div className="space-y-4">
-          {timeline.map((item, index) => (
-            <div key={index} className="space-y-1">
-              <div className="flex items-center space-x-3">
-                <div className="w-3 h-3 bg-blue-500 rounded-full" />
-                <p className="font-bold">
-                  {item.date} - {item.event}
-                </p>
-              </div>
-
-              {/* detalhes */}
-              {item.details && (
-                <p className="text-sm text-gray-700 ml-6">{item.details}</p>
-              )}
-
-              {/* botão de download quando houver arquivo */}
-              {item.fileUrl && (
-                <div className="ml-6">
-                  <a
-                    href={item.fileUrl}
-                    download
-                    className="inline-block text-sm bg-blue-600 text-white px-3 py-1 rounded hover:opacity-90"
-                  >
-                    Baixar arquivo
-                  </a>
-                </div>
-              )}
-
-              {/* dados analisados */}
-              {item.analysis && (
-                <div className="ml-6 text-sm text-gray-800">
-                  <span className="font-medium">Dados analisados:</span>
-                  <ul className="list-disc ml-5">
-                    {item.analysis.ureia !== undefined && (
-                      <li>Ureia: {item.analysis.ureia}</li>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left border-b">
+                <th className="py-2 pr-4">Data</th>
+                <th className="py-2 pr-4">Evento</th>
+                <th className="py-2 pr-4">Dados atualizados</th>
+                <th className="py-2 pr-4">Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              {timeline.map((item, idx) => (
+                <tr key={idx} className="border-b align-top">
+                  <td className="py-2 pr-4 whitespace-nowrap">{item.date}</td>
+                  <td className="py-2 pr-4">
+                    <div className="font-semibold">{item.event}</div>
+                    {item.details && <div className="text-gray-600 mt-1">{item.details}</div>}
+                  </td>
+                  <td className="py-2 pr-4">{renderAnalysis(item.analysis)}</td>
+                  <td className="py-2 pr-4">
+                    {item.fileUrl ? (
+                      <a
+                        href={item.fileUrl}
+                        download
+                        className="inline-block bg-blue-600 text-white px-3 py-1 rounded hover:opacity-90"
+                      >
+                        Baixar
+                      </a>
+                    ) : (
+                      "—"
                     )}
-                    {item.analysis.creatinina !== undefined && (
-                      <li>Creatinina: {item.analysis.creatinina}</li>
-                    )}
-                    {item.analysis.leucocitos !== undefined && (
-                      <li>Leucócitos: {item.analysis.leucocitos.toLocaleString("pt-BR")}</li>
-                    )}
-                    {item.analysis.notas && <li>Notas: {item.analysis.notas}</li>}
-                  </ul>
-                </div>
-              )}
-              <hr className="border-gray-200 mt-2" />
-            </div>
-          ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -262,14 +275,10 @@ export default function App() {
         <p className="mt-2 text-sm text-gray-700">{examExplanation}</p>
       </div>
 
-      {/* Info estática */}
+      {/* Blocos estáticos */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">🔍 Principais Suspeitas</h2>
-        <ul className="list-disc ml-5">
-          {suspeitas.map((s, i) => (
-            <li key={i}>{s}</li>
-          ))}
-        </ul>
+        <ul className="list-disc ml-5">{suspeitas.map((s, i) => <li key={i}>{s}</li>)}</ul>
       </div>
 
       <div className="bg-white shadow p-4 rounded-2xl">
@@ -279,54 +288,56 @@ export default function App() {
 
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">⏭ Próximos Passos</h2>
-        <ul className="list-disc ml-5">
-          {proximosPassos.map((p, i) => (
-            <li key={i}>{p}</li>
-          ))}
-        </ul>
+        <ul className="list-disc ml-5">{proximosPassos.map((p, i) => <li key={i}>{p}</li>)}</ul>
       </div>
 
-      {/* Formulário */}
+      {/* Formulário — upload ANTES do Adicionar */}
       <div className="bg-white shadow p-4 rounded-2xl">
         <h2 className="text-xl font-semibold mb-2">➕ Adicionar Novo Evento</h2>
-        <input
-          type="date"
-          value={newEvent.date}
-          onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
-          className="border p-1 rounded mr-2"
-        />
-        <input
-          type="text"
-          placeholder="Evento"
-          value={newEvent.event}
-          onChange={(e) => setNewEvent({ ...newEvent, event: e.target.value })}
-          className="border p-1 rounded mr-2"
-        />
+
+        <div className="flex flex-wrap gap-2 mb-2">
+          <input
+            type="date"
+            value={newEvent.date}
+            onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
+            className="border p-1 rounded"
+          />
+          <input
+            type="text"
+            placeholder="Evento"
+            value={newEvent.event}
+            onChange={(e) => setNewEvent({ ...newEvent, event: e.target.value })}
+            className="border p-1 rounded flex-1 min-w-[220px]"
+          />
+        </div>
+
         <textarea
-          placeholder="Detalhes (descreva sintomas, contexto, etc.)"
+          placeholder="Detalhes (se deixar em branco, a IA tenta ler o arquivo)"
           value={newEvent.details}
-          onChange={(e) =>
-            setNewEvent({ ...newEvent, details: e.target.value })
-          }
-          className="border p-1 rounded w-full mt-2"
+          onChange={(e) => setNewEvent({ ...newEvent, details: e.target.value })}
+          className="border p-1 rounded w-full mb-2"
         />
+
+        <div className="mb-3">
+          <label className="block mb-1 font-medium">📎 Upload de Arquivo de Exame</label>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={(e) => setPendingFile(e.target.files?.[0] ?? null)}
+            className="border p-1 rounded"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Se “Detalhes” ficar vazio, vou tentar extrair Ureia, Creatinina e Leucócitos do arquivo usando IA.
+          </p>
+        </div>
+
         <button
           onClick={handleAddEvent}
           disabled={isSaving}
-          className="bg-blue-500 text-white px-3 py-1 rounded mt-2"
+          className="bg-blue-600 text-white px-3 py-1 rounded"
         >
           {isSaving ? "Salvando..." : "Adicionar"}
         </button>
-
-        <div className="mt-4">
-          <label className="block mb-1 font-medium">
-            📎 Upload de Arquivo de Exame
-          </label>
-          <input type="file" className="border p-1 rounded" onChange={handleFileUpload} />
-          <p className="text-xs text-gray-500 mt-1">
-            Após o upload, informe os valores do exame. Eles serão registrados na timeline e no gráfico.
-          </p>
-        </div>
       </div>
     </div>
   );
